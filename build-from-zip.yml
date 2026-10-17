@@ -1,0 +1,62 @@
+name: Build ASCEND ARENA APK from source archive
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "ascend-arena-src.zip"
+      - ".github/workflows/build-from-zip.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  android-debug-apk:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends unzip ninja-build python3
+
+      - name: Check and extract source archive
+        run: |
+          test -s ascend-arena-src.zip || { echo "Missing ascend-arena-src.zip at repository root"; exit 1; }
+          mkdir -p src
+          unzip -q ascend-arena-src.zip -d src
+          test -f src/CMakeLists.txt
+          chmod +x src/tools/android/prepare_android_project.sh src/tools/ci/build_and_test.sh
+
+      - name: Build and test game core and SDL host
+        run: src/tools/ci/build_and_test.sh platform
+
+      - name: Install Android SDK components
+        run: |
+          set -euo pipefail
+          SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "${ANDROID_HOME}" -type f -name sdkmanager 2>/dev/null | head -n 1)"
+          fi
+          test -x "$SDKMANAGER" || { echo "sdkmanager not found under ANDROID_HOME"; exit 1; }
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0" "ndk;28.2.13676358" "cmake;3.22.1"
+
+      - name: Generate Android project
+        run: src/tools/android/prepare_android_project.sh src/build/android
+
+      - name: Build debug APK
+        working-directory: src/build/android
+        run: ./gradlew --no-daemon assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ascend-arena-debug-apk
+          path: src/build/android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
